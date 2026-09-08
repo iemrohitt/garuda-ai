@@ -101,44 +101,56 @@ async def chat(request: ChatRequest):
     # 2. Search ChromaDB
     # -----------------------------------------------------
 
-    results = search_documents(
+    retrieved_chunks = search_documents(
         user_question,
         top_k=3
     )
 
 
     # -----------------------------------------------------
-    # 3. Get retrieved document chunks
+    # 3. Check if relevant documents were found
     # -----------------------------------------------------
 
-    retrieved_chunks = results["documents"][0]
+    if not retrieved_chunks:
+
+        context = (
+            "No relevant information was found "
+            "in the uploaded documents."
+        )
+
+    else:
+
+        context = "\n\n".join(
+            retrieved_chunks
+        )
 
 
     # -----------------------------------------------------
-    # 4. Combine chunks
-    # -----------------------------------------------------
-
-    context = "\n\n".join(
-        retrieved_chunks
-    )
-
-
-    # -----------------------------------------------------
-    # 5. Create RAG prompt
+    # 4. Create RAG prompt
     # -----------------------------------------------------
 
     prompt = f"""
 You are Garuda AI, an intelligent AI assistant.
 
-Answer the user's question using the provided
-document context.
+Your job is to answer the user's question using
+the provided document context.
 
-If the answer cannot be found in the document,
-say that the information is not available
-in the uploaded document.
+IMPORTANT RULES:
+
+1. Use the document context as the primary source.
+2. Do not invent information that is not present
+   in the context.
+3. If the answer cannot be found in the context,
+   clearly say that the information is not available
+   in the uploaded document.
+4. Give a clear and concise answer.
+5. Do not mention that you are using ChromaDB,
+   embeddings, or a RAG pipeline unless asked.
 
 DOCUMENT CONTEXT:
+-----------------
 {context}
+-----------------
 
 USER QUESTION:
 {user_question}
@@ -146,7 +158,7 @@ USER QUESTION:
 
 
     # -----------------------------------------------------
-    # 6. Generate streaming response
+    # 5. Generate streaming response
     # -----------------------------------------------------
 
     def generate():
@@ -179,7 +191,7 @@ USER QUESTION:
 
 
     # -----------------------------------------------------
-    # 7. Return streaming response
+    # 6. Return streaming response
     # -----------------------------------------------------
 
     return StreamingResponse(

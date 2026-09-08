@@ -3,16 +3,18 @@ from sentence_transformers import SentenceTransformer
 import chromadb
 
 
-# --------------------------------------------------
+# =========================================================
 # EMBEDDING MODEL
-# --------------------------------------------------
+# =========================================================
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model = SentenceTransformer(
+    "all-MiniLM-L6-v2"
+)
 
 
-# --------------------------------------------------
+# =========================================================
 # CHROMADB
-# --------------------------------------------------
+# =========================================================
 
 chroma_client = chromadb.PersistentClient(
     path="chroma_db"
@@ -23,9 +25,9 @@ collection = chroma_client.get_or_create_collection(
 )
 
 
-# --------------------------------------------------
+# =========================================================
 # PDF TEXT EXTRACTION
-# --------------------------------------------------
+# =========================================================
 
 def extract_text_from_pdf(file_path: str) -> str:
     """
@@ -37,6 +39,7 @@ def extract_text_from_pdf(file_path: str) -> str:
     text = ""
 
     for page in reader.pages:
+
         page_text = page.extract_text()
 
         if page_text:
@@ -45,9 +48,9 @@ def extract_text_from_pdf(file_path: str) -> str:
     return text.strip()
 
 
-# --------------------------------------------------
+# =========================================================
 # TEXT CHUNKING
-# --------------------------------------------------
+# =========================================================
 
 def chunk_text(
     text: str,
@@ -68,18 +71,21 @@ def chunk_text(
 
         end = start + chunk_size
 
-        chunk = " ".join(words[start:end])
+        chunk = " ".join(
+            words[start:end]
+        )
 
-        chunks.append(chunk)
+        if chunk.strip():
+            chunks.append(chunk)
 
         start += chunk_size - overlap
 
     return chunks
 
 
-# --------------------------------------------------
+# =========================================================
 # CREATE EMBEDDINGS
-# --------------------------------------------------
+# =========================================================
 
 def create_embeddings(chunks: list[str]):
     """
@@ -94,18 +100,22 @@ def create_embeddings(chunks: list[str]):
     return embeddings
 
 
-# --------------------------------------------------
+# =========================================================
 # STORE CHUNKS IN CHROMADB
-# --------------------------------------------------
+# =========================================================
 
-def store_chunks(chunks: list[str], embeddings):
+def store_chunks(
+    chunks: list[str],
+    embeddings,
+    document_name: str = "document"
+):
     """
-    Store document chunks and their embeddings
+    Store document chunks and embeddings
     inside ChromaDB.
     """
 
     ids = [
-        f"chunk_{i}"
+        f"{document_name}_chunk_{i}"
         for i in range(len(chunks))
     ]
 
@@ -118,9 +128,68 @@ def store_chunks(chunks: list[str], embeddings):
     return len(chunks)
 
 
-# --------------------------------------------------
+# =========================================================
+# ADD DOCUMENT
+# =========================================================
+
+def add_document(
+    text: str,
+    document_name: str
+):
+    """
+    Process a document and add it to ChromaDB.
+
+    Pipeline:
+
+    Text
+      ↓
+    Chunking
+      ↓
+    Embeddings
+      ↓
+    ChromaDB
+    """
+
+    # -----------------------------------------------------
+    # 1. Create chunks
+    # -----------------------------------------------------
+
+    chunks = chunk_text(text)
+
+
+    # -----------------------------------------------------
+    # 2. Create embeddings
+    # -----------------------------------------------------
+
+    embeddings = create_embeddings(
+        chunks
+    )
+
+
+    # -----------------------------------------------------
+    # 3. Store in ChromaDB
+    # -----------------------------------------------------
+
+    stored_chunks = store_chunks(
+        chunks,
+        embeddings,
+        document_name
+    )
+
+
+    # -----------------------------------------------------
+    # 4. Return information
+    # -----------------------------------------------------
+
+    return {
+        "document": document_name,
+        "chunks": stored_chunks
+    }
+
+
+# =========================================================
 # SEMANTIC SEARCH
-# --------------------------------------------------
+# =========================================================
 
 def search_documents(
     query: str,
@@ -131,14 +200,20 @@ def search_documents(
     semantically similar to the user's question.
     """
 
-    # Convert the question into an embedding
+    # -----------------------------------------------------
+    # 1. Convert question into embedding
+    # -----------------------------------------------------
+
     query_embedding = embedding_model.encode(
         query,
         convert_to_numpy=True
     )
 
 
-    # Search ChromaDB
+    # -----------------------------------------------------
+    # 2. Search ChromaDB
+    # -----------------------------------------------------
+
     results = collection.query(
         query_embeddings=[
             query_embedding.tolist()
@@ -147,7 +222,14 @@ def search_documents(
     )
 
 
-    # Return the matching documents
-    documents = results.get("documents", [[]])[0]
+    # -----------------------------------------------------
+    # 3. Extract matching documents
+    # -----------------------------------------------------
+
+    documents = results.get(
+        "documents",
+        [[]]
+    )[0]
+
 
     return documents
