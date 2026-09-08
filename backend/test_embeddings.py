@@ -1,12 +1,19 @@
-from sentence_transformers import SentenceTransformer
+from rag.engine import (
+    extract_text_from_pdf,
+    chunk_text,
+    create_embeddings
+)
 
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+pdf_path = "documents/Cloud Computing.pdf"
 
-text = "Cloud computing provides on-demand computing resources."
+text = extract_text_from_pdf(pdf_path)
 
-embedding = model.encode(text)
+chunks = chunk_text(text)
 
-print("Embedding type:", type(embedding))
-print("Embedding dimensions:", len(embedding))
-print("First 10 values:", embedding[:10])
+embeddings = create_embeddings(chunks)
+
+print("Total chunks:", len(chunks))
+print("Embedding shape:", embeddings.shape)
+print("First chunk:", chunks[0][:200])
+print("First 10 embedding values:", embeddings[0][:10])

@@ -1,4 +1,9 @@
 from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+
+
+# Load the embedding model once when the application starts
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 def extract_text_from_pdf(file_path: str) -> str:
@@ -19,12 +24,13 @@ def extract_text_from_pdf(file_path: str) -> str:
     return text.strip()
 
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+def chunk_text(
+    text: str,
+    chunk_size: int = 500,
+    overlap: int = 50
+) -> list[str]:
     """
     Split text into overlapping chunks.
-
-    chunk_size: Maximum number of words in each chunk.
-    overlap: Number of words repeated between consecutive chunks.
     """
 
     words = text.split()
@@ -43,3 +49,16 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
         start += chunk_size - overlap
 
     return chunks
+
+
+def create_embeddings(chunks: list[str]):
+    """
+    Convert text chunks into numerical embedding vectors.
+    """
+
+    embeddings = embedding_model.encode(
+        chunks,
+        convert_to_numpy=True
+    )
+
+    return embeddings
