@@ -1,10 +1,31 @@
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
+import chromadb
 
 
-# Load the embedding model once when the application starts
+# --------------------------------------------------
+# EMBEDDING MODEL
+# --------------------------------------------------
+
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
+
+# --------------------------------------------------
+# CHROMADB
+# --------------------------------------------------
+
+chroma_client = chromadb.PersistentClient(
+    path="chroma_db"
+)
+
+collection = chroma_client.get_or_create_collection(
+    name="garuda_documents"
+)
+
+
+# --------------------------------------------------
+# PDF TEXT EXTRACTION
+# --------------------------------------------------
 
 def extract_text_from_pdf(file_path: str) -> str:
     """
@@ -24,6 +45,10 @@ def extract_text_from_pdf(file_path: str) -> str:
     return text.strip()
 
 
+# --------------------------------------------------
+# TEXT CHUNKING
+# --------------------------------------------------
+
 def chunk_text(
     text: str,
     chunk_size: int = 500,
@@ -31,6 +56,12 @@ def chunk_text(
 ) -> list[str]:
     """
     Split text into overlapping chunks.
+
+    chunk_size:
+        Maximum number of words in each chunk.
+
+    overlap:
+        Number of words shared between consecutive chunks.
     """
 
     words = text.split()
@@ -40,6 +71,7 @@ def chunk_text(
     start = 0
 
     while start < len(words):
+
         end = start + chunk_size
 
         chunk = " ".join(words[start:end])
@@ -51,9 +83,13 @@ def chunk_text(
     return chunks
 
 
+# --------------------------------------------------
+# CREATE EMBEDDINGS
+# --------------------------------------------------
+
 def create_embeddings(chunks: list[str]):
     """
-    Convert text chunks into numerical embedding vectors.
+    Convert text chunks into numerical vectors.
     """
 
     embeddings = embedding_model.encode(
@@ -62,3 +98,27 @@ def create_embeddings(chunks: list[str]):
     )
 
     return embeddings
+
+
+# --------------------------------------------------
+# STORE CHUNKS IN CHROMADB
+# --------------------------------------------------
+
+def store_chunks(chunks: list[str], embeddings):
+    """
+    Store document chunks and their embeddings
+    inside ChromaDB.
+    """
+
+    ids = [
+        f"chunk_{i}"
+        for i in range(len(chunks))
+    ]
+
+    collection.add(
+        ids=ids,
+        documents=chunks,
+        embeddings=embeddings.tolist()
+    )
+
+    return len(chunks)
