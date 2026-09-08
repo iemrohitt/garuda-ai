@@ -56,12 +56,6 @@ def chunk_text(
 ) -> list[str]:
     """
     Split text into overlapping chunks.
-
-    chunk_size:
-        Maximum number of words in each chunk.
-
-    overlap:
-        Number of words shared between consecutive chunks.
     """
 
     words = text.split()
@@ -115,10 +109,45 @@ def store_chunks(chunks: list[str], embeddings):
         for i in range(len(chunks))
     ]
 
-    collection.add(
+    collection.upsert(
         ids=ids,
         documents=chunks,
         embeddings=embeddings.tolist()
     )
 
     return len(chunks)
+
+
+# --------------------------------------------------
+# SEMANTIC SEARCH
+# --------------------------------------------------
+
+def search_documents(
+    query: str,
+    top_k: int = 3
+):
+    """
+    Search ChromaDB for chunks that are
+    semantically similar to the user's question.
+    """
+
+    # Convert the question into an embedding
+    query_embedding = embedding_model.encode(
+        query,
+        convert_to_numpy=True
+    )
+
+
+    # Search ChromaDB
+    results = collection.query(
+        query_embeddings=[
+            query_embedding.tolist()
+        ],
+        n_results=top_k
+    )
+
+
+    # Return the matching documents
+    documents = results.get("documents", [[]])[0]
+
+    return documents
