@@ -6,6 +6,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
 
   // =====================================================
@@ -14,19 +15,42 @@ function App() {
 
   const sendMessage = async () => {
 
-    if (!message.trim()) return;
+    if (!message.trim() || generating || uploading) {
+      return;
+    }
+
 
     const userMessage = {
       role: "user",
       content: message
     };
 
-    setMessages((previous) => [
-      ...previous,
+
+    // Save the current conversation before
+    // adding the new user message
+    const conversation = [
+      ...messages,
       userMessage
-    ]);
+    ];
+
+
+    // Show user message immediately
+    setMessages(conversation);
 
     setMessage("");
+
+    setGenerating(true);
+
+
+    // Add an empty assistant message
+    // which will be filled while streaming
+    setMessages([
+      ...conversation,
+      {
+        role: "assistant",
+        content: ""
+      }
+    ]);
 
 
     try {
@@ -41,10 +65,7 @@ function App() {
           },
 
           body: JSON.stringify({
-            messages: [
-              ...messages,
-              userMessage
-            ]
+            messages: conversation
           })
         }
       );
@@ -59,30 +80,109 @@ function App() {
       }
 
 
-      const text = await response.text();
+      // =================================================
+      // STREAM RESPONSE
+      // =================================================
+
+      if (!response.body) {
+
+        throw new Error(
+          "Streaming is not supported by this browser."
+        );
+
+      }
 
 
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: "assistant",
-          content: text
+      const reader = response.body.getReader();
+
+      const decoder = new TextDecoder();
+
+      let assistantText = "";
+
+
+      while (true) {
+
+        const { value, done } =
+          await reader.read();
+
+
+        if (done) {
+          break;
         }
-      ]);
+
+
+        // Convert received bytes into text
+        const chunk = decoder.decode(
+          value,
+          {
+            stream: true
+          }
+        );
+
+
+        assistantText += chunk;
+
+
+        // Update the last assistant message
+        setMessages((previous) => {
+
+          const updatedMessages = [
+            ...previous
+          ];
+
+
+          updatedMessages[
+            updatedMessages.length - 1
+          ] = {
+
+            role: "assistant",
+
+            content: assistantText
+
+          };
+
+
+          return updatedMessages;
+
+        });
+
+      }
 
 
     } catch (error) {
 
-      console.error(error);
+      console.error(
+        "Chat error:",
+        error
+      );
 
-      setMessages((previous) => [
-        ...previous,
-        {
+
+      setMessages((previous) => {
+
+        const updatedMessages = [
+          ...previous
+        ];
+
+
+        updatedMessages[
+          updatedMessages.length - 1
+        ] = {
+
           role: "assistant",
+
           content:
             "Sorry, Garuda AI could not connect to the server."
-        }
-      ]);
+
+        };
+
+
+        return updatedMessages;
+
+      });
+
+    } finally {
+
+      setGenerating(false);
 
     }
 
@@ -97,14 +197,24 @@ function App() {
 
     const file = event.target.files[0];
 
-    if (!file) return;
+    if (!file) {
+      return;
+    }
 
 
-    // Make sure it is a PDF
+    // ---------------------------------------------------
+    // Check file type
+    // ---------------------------------------------------
 
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
+    if (
+      !file.name
+        .toLowerCase()
+        .endsWith(".pdf")
+    ) {
 
-      alert("Please select a PDF file.");
+      alert(
+        "Please select a PDF file."
+      );
 
       event.target.value = "";
 
@@ -118,7 +228,10 @@ function App() {
 
     const formData = new FormData();
 
-    formData.append("file", file);
+    formData.append(
+      "file",
+      file
+    );
 
 
     try {
@@ -138,7 +251,8 @@ function App() {
       if (!response.ok) {
 
         throw new Error(
-          data.error || "PDF upload failed."
+          data.error ||
+          "PDF upload failed."
         );
 
       }
@@ -154,12 +268,17 @@ function App() {
 
     } catch (error) {
 
-      console.error(error);
+      console.error(
+        "Upload error:",
+        error
+      );
+
 
       alert(
         "Could not upload the PDF.\n\n" +
         error.message
       );
+
 
     } finally {
 
@@ -178,7 +297,12 @@ function App() {
 
   const newChat = () => {
 
+    if (generating) {
+      return;
+    }
+
     setMessages([]);
+
     setMessage("");
 
   };
@@ -205,6 +329,7 @@ function App() {
         <button
           className="new-chat"
           onClick={newChat}
+          disabled={generating}
         >
           + New Chat
         </button>
@@ -300,6 +425,18 @@ function App() {
 
                   {msg.content}
 
+                  {/* Streaming indicator */}
+
+                  {generating &&
+                    index === messages.length - 1 &&
+                    msg.role === "assistant" && (
+
+                    <span className="typing-indicator">
+                      ▌
+                    </span>
+
+                  )}
+
                 </div>
 
               </div>
@@ -329,7 +466,9 @@ function App() {
               className="upload-button"
             >
 
-              {uploading ? "⏳" : "📎"}
+              {uploading
+                ? "⏳"
+                : "📎"}
 
             </label>
 
@@ -339,7 +478,10 @@ function App() {
               type="file"
               accept=".pdf,application/pdf"
               onChange={uploadPDF}
-              disabled={uploading}
+              disabled={
+                uploading ||
+                generating
+              }
               hidden
             />
 
@@ -371,10 +513,15 @@ function App() {
               placeholder={
                 uploading
                   ? "Uploading PDF..."
-                  : "Ask Garuda AI..."
+                  : generating
+                    ? "Garuda AI is thinking..."
+                    : "Ask Garuda AI..."
               }
 
-              disabled={uploading}
+              disabled={
+                uploading ||
+                generating
+              }
 
             />
 
@@ -383,9 +530,17 @@ function App() {
 
             <button
               onClick={sendMessage}
-              disabled={uploading}
+              disabled={
+                uploading ||
+                generating ||
+                !message.trim()
+              }
             >
-              ➤
+
+              {generating
+                ? "⏳"
+                : "➤"}
+
             </button>
 
 
