@@ -14,6 +14,14 @@ from google import genai
 
 from rag.engine import add_document, search_documents
 
+from database import (
+    create_conversation,
+    get_conversations,
+    get_messages,
+    save_message,
+    delete_conversation
+)
+
 
 # =========================================================
 # LOAD ENVIRONMENT VARIABLES
@@ -35,10 +43,14 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Conversation-ID"],
 )
 
 
@@ -69,6 +81,11 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[Message]
+    conversation_id: int | None = None
+
+
+class ConversationRequest(BaseModel):
+    title: str = "New Chat"
 
 
 # =========================================================
@@ -84,6 +101,81 @@ def home():
 
 
 # =========================================================
+# CREATE NEW CONVERSATION
+# =========================================================
+
+@app.post("/api/conversations")
+def create_new_conversation(
+    request: ConversationRequest
+):
+
+    conversation_id = create_conversation(
+        request.title
+    )
+
+    return {
+        "id": conversation_id,
+        "title": request.title,
+        "message": "Conversation created successfully."
+    }
+
+
+# =========================================================
+# GET ALL CONVERSATIONS
+# =========================================================
+
+@app.get("/api/conversations")
+def list_conversations():
+
+    conversations = get_conversations()
+
+    return {
+        "conversations": conversations
+    }
+
+
+# =========================================================
+# GET MESSAGES OF A CONVERSATION
+# =========================================================
+
+@app.get(
+    "/api/conversations/{conversation_id}/messages"
+)
+def conversation_messages(
+    conversation_id: int
+):
+
+    messages = get_messages(
+        conversation_id
+    )
+
+    return {
+        "conversation_id": conversation_id,
+        "messages": messages
+    }
+
+
+# =========================================================
+# DELETE CONVERSATION
+# =========================================================
+
+@app.delete(
+    "/api/conversations/{conversation_id}"
+)
+def remove_conversation(
+    conversation_id: int
+):
+
+    delete_conversation(
+        conversation_id
+    )
+
+    return {
+        "message": "Conversation deleted successfully."
+    }
+
+
+# =========================================================
 # CHAT + RAG
 # =========================================================
 
@@ -91,14 +183,49 @@ def home():
 async def chat(request: ChatRequest):
 
     # -----------------------------------------------------
-    # 1. Get latest user question
+    # 1. Check messages
+    # -----------------------------------------------------
+
+    if not request.messages:
+
+        return {
+            "error": "No messages were provided."
+        }
+
+
+    # -----------------------------------------------------
+    # 2. Get latest user question
     # -----------------------------------------------------
 
     user_question = request.messages[-1].content
 
 
     # -----------------------------------------------------
-    # 2. Search ChromaDB
+    # 3. Create conversation if one doesn't exist
+    # -----------------------------------------------------
+
+    conversation_id = request.conversation_id
+
+    if conversation_id is None:
+
+        conversation_id = create_conversation(
+            user_question[:50]
+        )
+
+
+    # -----------------------------------------------------
+    # 4. Save user message
+    # -----------------------------------------------------
+
+    save_message(
+        conversation_id,
+        "user",
+        user_question
+    )
+
+
+    # -----------------------------------------------------
+    # 5. Search ChromaDB
     # -----------------------------------------------------
 
     retrieved_chunks = search_documents(
@@ -108,7 +235,7 @@ async def chat(request: ChatRequest):
 
 
     # -----------------------------------------------------
-    # 3. Check if relevant documents were found
+    # 6. Prepare document context
     # -----------------------------------------------------
 
     if not retrieved_chunks:
@@ -126,7 +253,7 @@ async def chat(request: ChatRequest):
 
 
     # -----------------------------------------------------
-    # 4. Create RAG prompt
+    # 7. Create RAG prompt
     # -----------------------------------------------------
 
     prompt = f"""
@@ -158,10 +285,12 @@ USER QUESTION:
 
 
     # -----------------------------------------------------
-    # 5. Generate streaming response
+    # 8. Generate streaming response
     # -----------------------------------------------------
 
     def generate():
+
+        assistant_text = ""
 
         try:
 
@@ -170,11 +299,28 @@ USER QUESTION:
                 contents=prompt,
             )
 
+
             for chunk in response:
 
                 if chunk.text:
 
+                    assistant_text += chunk.text
+
                     yield chunk.text
+
+
+            # -------------------------------------------------
+            # Save complete AI response
+            # -------------------------------------------------
+
+            if assistant_text.strip():
+
+                save_message(
+                    conversation_id,
+                    "assistant",
+                    assistant_text
+                )
+
 
         except Exception as e:
 
@@ -183,20 +329,31 @@ USER QUESTION:
                 e
             )
 
-            yield (
+            error_message = (
                 "\n\n⚠️ Garuda AI: "
                 "The AI model is temporarily unavailable. "
                 "Please try again."
             )
 
+            yield error_message
+
 
     # -----------------------------------------------------
-    # 6. Return streaming response
+    # 9. Return streaming response
     # -----------------------------------------------------
 
     return StreamingResponse(
+
         generate(),
+
         media_type="text/plain",
+
+        headers={
+            "X-Conversation-ID": str(
+                conversation_id
+            )
+        }
+
     )
 
 
@@ -221,7 +378,17 @@ async def upload_pdf(
 
 
     # -----------------------------------------------------
-    # 2. Save PDF
+    # 2. Create documents directory
+    # -----------------------------------------------------
+
+    os.makedirs(
+        "documents",
+        exist_ok=True
+    )
+
+
+    # -----------------------------------------------------
+    # 3. Save PDF
     # -----------------------------------------------------
 
     file_path = os.path.join(
@@ -230,6 +397,7 @@ async def upload_pdf(
     )
 
     file_content = await file.read()
+
 
     with open(
         file_path,
@@ -240,7 +408,7 @@ async def upload_pdf(
 
 
     # -----------------------------------------------------
-    # 3. Read PDF
+    # 4. Read PDF
     # -----------------------------------------------------
 
     reader = PdfReader(
@@ -251,7 +419,7 @@ async def upload_pdf(
 
 
     # -----------------------------------------------------
-    # 4. Extract text
+    # 5. Extract text
     # -----------------------------------------------------
 
     for page in reader.pages:
@@ -263,8 +431,23 @@ async def upload_pdf(
             text += page_text + "\n"
 
 
+    text = text.strip()
+
+
     # -----------------------------------------------------
-    # 5. Create chunks + embeddings
+    # 6. Check extracted text
+    # -----------------------------------------------------
+
+    if not text:
+
+        return {
+            "error":
+                "Could not extract text from this PDF."
+        }
+
+
+    # -----------------------------------------------------
+    # 7. Create chunks + embeddings
     #    and store in ChromaDB
     # -----------------------------------------------------
 
@@ -275,23 +458,24 @@ async def upload_pdf(
 
 
     # -----------------------------------------------------
-    # 6. Return result
+    # 8. Return result
     # -----------------------------------------------------
 
     return {
 
-        "filename": file.filename,
+        "filename":
+            file.filename,
 
-        "pages": len(
-            reader.pages
-        ),
+        "pages":
+            len(reader.pages),
 
-        "characters": len(
-            text
-        ),
+        "characters":
+            len(text),
 
-        "chunks": result["chunks"],
+        "chunks":
+            result["chunks"],
 
         "message":
             "PDF processed and stored in ChromaDB successfully."
+
     }
