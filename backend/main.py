@@ -71,6 +71,13 @@ client = genai.Client(
 
 
 # =========================================================
+# GEMINI MODEL
+# =========================================================
+
+GEMINI_MODEL = "gemini-3.6-flash"
+
+
+# =========================================================
 # DATA MODELS
 # =========================================================
 
@@ -238,41 +245,42 @@ async def chat(request: ChatRequest):
     # 6. Prepare document context
     # -----------------------------------------------------
 
-    if not retrieved_chunks:
-
-        context = (
-            "No relevant information was found "
-            "in the uploaded documents."
-        )
-
-    else:
+    if retrieved_chunks:
 
         context = "\n\n".join(
             retrieved_chunks
         )
 
-
-    # -----------------------------------------------------
-    # 7. Create RAG prompt
-    # -----------------------------------------------------
-
-    prompt = f"""
+        prompt = f"""
 You are Garuda AI, an intelligent AI assistant.
 
-Your job is to answer the user's question using
-the provided document context.
+Answer the user's question using the document
+context below when it is relevant.
 
 IMPORTANT RULES:
 
-1. Use the document context as the primary source.
-2. Do not invent information that is not present
-   in the context.
-3. If the answer cannot be found in the context,
-   clearly say that the information is not available
-   in the uploaded document.
-4. Give a clear and concise answer.
-5. Do not mention that you are using ChromaDB,
-   embeddings, or a RAG pipeline unless asked.
+1. If the document context contains information
+   relevant to the question, use it as the primary
+   source.
+2. If the question is a general question and the
+   document context is not relevant, answer using
+   your general knowledge.
+3. Do NOT claim that information is unavailable
+   simply because it is not present in the document.
+4. Only say that something is unavailable in the
+   uploaded document when the user specifically asks
+   about the document or when the question clearly
+   requires information from that document.
+5. For programming questions, provide working code
+   when appropriate.
+6. Format answers using Markdown.
+7. Use proper Markdown headings with #, ##, ###.
+8. Use numbered lists when presenting ordered steps.
+9. Use bullet points when presenting unordered items.
+10. Use LaTeX notation for mathematical equations.
+11. Do not mention ChromaDB, embeddings, or the RAG
+    pipeline unless the user asks about them.
+12. Give clear and useful explanations.
 
 DOCUMENT CONTEXT:
 -----------------
@@ -283,9 +291,37 @@ USER QUESTION:
 {user_question}
 """
 
+    else:
+
+        prompt = f"""
+You are Garuda AI, an intelligent AI assistant.
+
+Answer the user's question using your general
+knowledge.
+
+IMPORTANT RULES:
+
+1. Provide a helpful and accurate answer.
+2. Do not say that the answer is unavailable in
+   an uploaded document.
+3. For programming questions, provide working code
+   when appropriate.
+4. Format answers using Markdown.
+5. Use proper Markdown headings with #, ##, ###.
+6. Use numbered lists when presenting ordered steps.
+7. Use bullet points when presenting unordered items.
+8. Use LaTeX notation for mathematical equations.
+9. Give clear and useful explanations.
+10. Do not mention ChromaDB, embeddings, or RAG unless
+    the user asks about them.
+
+USER QUESTION:
+{user_question}
+"""
+
 
     # -----------------------------------------------------
-    # 8. Generate streaming response
+    # 7. Generate streaming response
     # -----------------------------------------------------
 
     def generate():
@@ -294,11 +330,14 @@ USER QUESTION:
 
         try:
 
-            response = client.models.generate_content_stream(
-                model="gemini-3.6-flash",
-                contents=prompt,
+            print(
+                f"Using Gemini model: {GEMINI_MODEL}"
             )
 
+            response = client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            )
 
             for chunk in response:
 
@@ -325,21 +364,32 @@ USER QUESTION:
         except Exception as e:
 
             print(
-                "Gemini error:",
-                e
+                "================================================="
+            )
+
+            print(
+                "GEMINI ERROR:"
+            )
+
+            print(
+                repr(e)
+            )
+
+            print(
+                "================================================="
             )
 
             error_message = (
-                "\n\n⚠️ Garuda AI: "
-                "The AI model is temporarily unavailable. "
-                "Please try again."
+                "\n\n⚠️ Garuda AI encountered an error while "
+                "connecting to the AI model.\n\n"
+                f"Error: {str(e)}"
             )
 
             yield error_message
 
 
     # -----------------------------------------------------
-    # 9. Return streaming response
+    # 8. Return streaming response
     # -----------------------------------------------------
 
     return StreamingResponse(
