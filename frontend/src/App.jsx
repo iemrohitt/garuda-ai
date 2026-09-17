@@ -22,9 +22,15 @@ function App() {
     loadConversations();
   }, []);
 
+  /* =====================================================
+     LOAD ALL CONVERSATIONS
+  ===================================================== */
+
   const loadConversations = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/conversations`);
+      const response = await fetch(
+        `${API_URL}/api/conversations`
+      );
 
       if (!response.ok) {
         throw new Error("Failed to load conversations");
@@ -40,36 +46,65 @@ function App() {
         setConversations([]);
       }
     } catch (error) {
-      console.error("Error loading conversations:", error);
+      console.error(
+        "Error loading conversations:",
+        error
+      );
+
       setConversations([]);
     }
   };
 
+  /* =====================================================
+     LOAD SINGLE CONVERSATION
+  ===================================================== */
+
   const loadConversation = async (id) => {
     try {
       const response = await fetch(
-        `${API_URL}/api/conversations/${id}`
+        `${API_URL}/api/conversations/${id}/messages`
       );
 
       if (!response.ok) {
-        throw new Error("Failed to load conversation");
+        throw new Error(
+          "Failed to load conversation messages"
+        );
       }
 
       const data = await response.json();
 
       setConversationId(id);
-      setMessages(data.messages || []);
+
+      if (Array.isArray(data)) {
+        setMessages(data);
+      } else if (Array.isArray(data.messages)) {
+        setMessages(data.messages);
+      } else {
+        setMessages([]);
+      }
+
       setInput("");
     } catch (error) {
-      console.error("Error loading conversation:", error);
+      console.error(
+        "Error loading conversation:",
+        error
+      );
     }
   };
+
+  /* =====================================================
+     NEW CHAT
+  ===================================================== */
 
   const newChat = () => {
     setConversationId(null);
     setMessages([]);
     setInput("");
   };
+
+  /* =====================================================
+     DELETE CONVERSATION
+  ===================================================== */
 
   const deleteConversation = async (id) => {
     try {
@@ -81,7 +116,9 @@ function App() {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to delete conversation");
+        throw new Error(
+          "Failed to delete conversation"
+        );
       }
 
       if (conversationId === id) {
@@ -90,9 +127,16 @@ function App() {
 
       await loadConversations();
     } catch (error) {
-      console.error("Error deleting conversation:", error);
+      console.error(
+        "Error deleting conversation:",
+        error
+      );
     }
   };
+
+  /* =====================================================
+     SEND MESSAGE
+  ===================================================== */
 
   const sendMessage = async () => {
     if (!input.trim() || loading) {
@@ -104,40 +148,62 @@ function App() {
       content: input.trim(),
     };
 
-    const updatedMessages = [...messages, userMessage];
+    const updatedMessages = [
+      ...messages,
+      userMessage,
+    ];
 
     setMessages(updatedMessages);
     setInput("");
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messages: updatedMessages,
-          conversation_id: conversationId,
-        }),
-      });
+      const response = await fetch(
+        `${API_URL}/api/chat`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messages: updatedMessages,
+            conversation_id: conversationId,
+          }),
+        }
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
 
-        console.error("Backend error:", errorText);
+        console.error(
+          "Backend error:",
+          errorText
+        );
 
         throw new Error(
           `Chat request failed: ${response.status}`
         );
       }
 
-      const newConversationId =
-        response.headers.get("X-Conversation-ID") ||
-        response.headers.get("x-conversation-id");
+      /* =================================================
+         GET CONVERSATION ID FROM RESPONSE HEADER
+      ================================================= */
 
-      if (newConversationId && !conversationId) {
-        setConversationId(newConversationId);
+      const newConversationId =
+        response.headers.get(
+          "X-Conversation-ID"
+        ) ||
+        response.headers.get(
+          "x-conversation-id"
+        );
+
+      if (
+        newConversationId &&
+        !conversationId
+      ) {
+        setConversationId(
+          newConversationId
+        );
       }
 
       if (!response.body) {
@@ -146,8 +212,15 @@ function App() {
         );
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      /* =================================================
+         STREAM RESPONSE
+      ================================================= */
+
+      const reader =
+        response.body.getReader();
+
+      const decoder =
+        new TextDecoder();
 
       let assistantText = "";
 
@@ -160,15 +233,19 @@ function App() {
       ]);
 
       while (true) {
-        const { value, done } = await reader.read();
+        const {
+          value,
+          done,
+        } = await reader.read();
 
         if (done) {
           break;
         }
 
-        const chunk = decoder.decode(value, {
-          stream: true,
-        });
+        const chunk =
+          decoder.decode(value, {
+            stream: true,
+          });
 
         assistantText += chunk;
 
@@ -177,9 +254,13 @@ function App() {
 
           if (
             updated.length > 0 &&
-            updated[updated.length - 1].role === "assistant"
+            updated[
+              updated.length - 1
+            ].role === "assistant"
           ) {
-            updated[updated.length - 1] = {
+            updated[
+              updated.length - 1
+            ] = {
               role: "assistant",
               content: assistantText,
             };
@@ -189,9 +270,16 @@ function App() {
         });
       }
 
+      /* =================================================
+         REFRESH SIDEBAR
+      ================================================= */
+
       await loadConversations();
     } catch (error) {
-      console.error("Error sending message:", error);
+      console.error(
+        "Error sending message:",
+        error
+      );
 
       setMessages((prev) => [
         ...prev,
@@ -206,22 +294,40 @@ function App() {
     }
   };
 
+  /* =====================================================
+     ENTER KEY
+  ===================================================== */
+
   const handleKeyDown = (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey
+    ) {
       event.preventDefault();
       sendMessage();
     }
   };
 
+  /* =====================================================
+     PDF UPLOAD
+  ===================================================== */
+
   const uploadPDF = async (event) => {
-    const file = event.target.files?.[0];
+    const file =
+      event.target.files?.[0];
 
     if (!file) {
       return;
     }
 
-    if (file.type !== "application/pdf") {
-      alert("Please select a PDF file.");
+    if (
+      file.type !==
+      "application/pdf"
+    ) {
+      alert(
+        "Please select a PDF file."
+      );
+
       event.target.value = "";
       return;
     }
@@ -229,42 +335,67 @@ function App() {
     setUploading(true);
 
     try {
-      const formData = new FormData();
+      const formData =
+        new FormData();
 
-      formData.append("file", file);
+      formData.append(
+        "file",
+        file
+      );
 
-      const response = await fetch(`${API_URL}/api/upload`, {
-        method: "POST",
-        body: formData,
-      });
+      const response =
+        await fetch(
+          `${API_URL}/api/upload`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
 
       if (!response.ok) {
-        throw new Error("PDF upload failed");
+        throw new Error(
+          "PDF upload failed"
+        );
       }
 
-      const data = await response.json();
+      const data =
+        await response.json();
 
       alert(
         `PDF uploaded successfully!\n\nFile: ${file.name}\nPages: ${
           data.pages ?? "N/A"
-        }\nChunks: ${data.chunks ?? "N/A"}`
+        }\nChunks: ${
+          data.chunks ?? "N/A"
+        }`
       );
     } catch (error) {
-      console.error("Error uploading PDF:", error);
+      console.error(
+        "Error uploading PDF:",
+        error
+      );
 
-      alert("Failed to upload PDF.");
+      alert(
+        "Failed to upload PDF."
+      );
     } finally {
       setUploading(false);
       event.target.value = "";
     }
   };
 
+  /* =====================================================
+     COPY CODE BUTTON
+  ===================================================== */
+
   const CopyButton = ({ code }) => {
-    const [copied, setCopied] = useState(false);
+    const [copied, setCopied] =
+      useState(false);
 
     const copyCode = async () => {
       try {
-        await navigator.clipboard.writeText(code);
+        await navigator.clipboard.writeText(
+          code
+        );
 
         setCopied(true);
 
@@ -272,7 +403,10 @@ function App() {
           setCopied(false);
         }, 1500);
       } catch (error) {
-        console.error("Copy failed:", error);
+        console.error(
+          "Copy failed:",
+          error
+        );
       }
     };
 
@@ -282,30 +416,58 @@ function App() {
         className="copy-code-button"
         onClick={copyCode}
       >
-        {copied ? "Copied!" : "Copy"}
+        {copied
+          ? "Copied!"
+          : "Copy"}
       </button>
     );
   };
 
-  const markdownComponents = {
-    code({ inline, className, children, ...props }) {
-      const match = /language-(\w+)/.exec(className || "");
+  /* =====================================================
+     MARKDOWN COMPONENTS
+  ===================================================== */
 
-      const code = String(children).replace(/\n$/, "");
+  const markdownComponents = {
+    code({
+      inline,
+      className,
+      children,
+      ...props
+    }) {
+      const match =
+        /language-(\w+)/.exec(
+          className || ""
+        );
+
+      const code =
+        String(children).replace(
+          /\n$/,
+          ""
+        );
 
       if (!inline) {
         return (
           <div className="code-block-wrapper">
             <div className="code-block-header">
-              <span>{match ? match[1] : "code"}</span>
+              <span>
+                {match
+                  ? match[1]
+                  : "code"}
+              </span>
 
-              <CopyButton code={code} />
+              <CopyButton
+                code={code}
+              />
             </div>
 
             <SyntaxHighlighter
               {...props}
               style={vscDarkPlus}
-              language={match ? match[1] : "text"}
+              language={
+                match
+                  ? match[1]
+                  : "text"
+              }
               PreTag="div"
               className="syntax-highlighter"
             >
@@ -316,26 +478,45 @@ function App() {
       }
 
       return (
-        <code className={className} {...props}>
+        <code
+          className={className}
+          {...props}
+        >
           {children}
         </code>
       );
     },
 
     h1({ children }) {
-      return <h1 className="markdown-h1">{children}</h1>;
+      return (
+        <h1 className="markdown-h1">
+          {children}
+        </h1>
+      );
     },
 
     h2({ children }) {
-      return <h2 className="markdown-h2">{children}</h2>;
+      return (
+        <h2 className="markdown-h2">
+          {children}
+        </h2>
+      );
     },
 
     h3({ children }) {
-      return <h3 className="markdown-h3">{children}</h3>;
+      return (
+        <h3 className="markdown-h3">
+          {children}
+        </h3>
+      );
     },
 
     h4({ children }) {
-      return <h4 className="markdown-h4">{children}</h4>;
+      return (
+        <h4 className="markdown-h4">
+          {children}
+        </h4>
+      );
     },
 
     ol({ children }) {
@@ -388,7 +569,10 @@ function App() {
       );
     },
 
-    a({ href, children }) {
+    a({
+      href,
+      children,
+    }) {
       return (
         <a
           href={href}
@@ -408,11 +592,23 @@ function App() {
     },
   };
 
+  /* =====================================================
+     UI
+  ===================================================== */
+
   return (
     <div className="app">
+
+      {/* =================================================
+          SIDEBAR
+      ================================================= */}
+
       <aside className="sidebar">
+
         <div className="sidebar-header">
-          <h1>🦅 Garuda AI</h1>
+          <h1>
+            🦅 Garuda AI
+          </h1>
         </div>
 
         <button
@@ -424,147 +620,220 @@ function App() {
         </button>
 
         <div className="recent-chats">
-          <h3>Recent Chats</h3>
 
-          {conversations.length === 0 ? (
+          <h3>
+            Recent Chats
+          </h3>
+
+          {conversations.length ===
+          0 ? (
             <p className="sidebar-message">
               No conversations yet.
             </p>
           ) : (
-            conversations.map((conversation) => (
-              <div
-                key={conversation.id}
-                className={`conversation-item ${
-                  conversationId === conversation.id
-                    ? "active"
-                    : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  className="conversation-button"
-                  onClick={() =>
-                    loadConversation(conversation.id)
+            conversations.map(
+              (conversation) => (
+                <div
+                  key={
+                    conversation.id
                   }
+                  className={`conversation-item ${
+                    conversationId ===
+                    conversation.id
+                      ? "active"
+                      : ""
+                  }`}
                 >
-                  <div className="conversation-title">
-                    {conversation.title ||
-                      "New Conversation"}
-                  </div>
 
-                  {conversation.created_at && (
-                    <div className="conversation-date">
-                      {new Date(
-                        conversation.created_at
-                      ).toLocaleDateString()}
+                  <button
+                    type="button"
+                    className="conversation-button"
+                    onClick={() =>
+                      loadConversation(
+                        conversation.id
+                      )
+                    }
+                  >
+
+                    <div className="conversation-title">
+                      {conversation.title ||
+                        "New Conversation"}
                     </div>
-                  )}
-                </button>
 
-                <button
-                  type="button"
-                  className="delete-button"
-                  onClick={() =>
-                    deleteConversation(
-                      conversation.id
-                    )
-                  }
-                  title="Delete conversation"
-                >
-                  🗑
-                </button>
-              </div>
-            ))
+                    {conversation.created_at && (
+                      <div className="conversation-date">
+                        {new Date(
+                          conversation.created_at
+                        ).toLocaleDateString()}
+                      </div>
+                    )}
+
+                  </button>
+
+                  <button
+                    type="button"
+                    className="delete-button"
+                    onClick={() =>
+                      deleteConversation(
+                        conversation.id
+                      )
+                    }
+                    title="Delete conversation"
+                  >
+                    🗑
+                  </button>
+
+                </div>
+              )
+            )
           )}
+
         </div>
       </aside>
 
+      {/* =================================================
+          MAIN
+      ================================================= */}
+
       <main className="main">
+
+        {/* HEADER */}
+
         <header className="header">
+
           <div>
-            <h2>Garuda AI</h2>
-            <p>Your intelligent AI assistant</p>
+
+            <h2>
+              Garuda AI
+            </h2>
+
+            <p>
+              Your intelligent AI assistant
+            </p>
+
           </div>
+
         </header>
 
-        <div className="chat-container">
-          {messages.length === 0 && (
-            <div className="welcome">
-              <div className="welcome-icon">🦅</div>
+        {/* CHAT */}
 
-              <h1>Welcome to Garuda AI</h1>
+        <div className="chat-container">
+
+          {messages.length ===
+            0 && (
+            <div className="welcome">
+
+              <div className="welcome-icon">
+                🦅
+              </div>
+
+              <h1>
+                Welcome to Garuda AI
+              </h1>
 
               <p>
-                Ask questions, upload documents, and
-                interact with your AI assistant.
+                Ask questions, upload
+                documents, and interact
+                with your AI assistant.
               </p>
+
             </div>
           )}
 
-          {messages.length > 0 && (
+          {messages.length >
+            0 && (
             <div className="messages">
-              {messages.map((message, index) => (
-                <div
-                  key={index}
-                  className={`message ${
-                    message.role === "user"
-                      ? "user-message"
-                      : "assistant-message"
-                  }`}
-                >
-                  <div className="message-avatar">
-                    {message.role === "user"
-                      ? "👤"
-                      : "🦅"}
-                  </div>
 
-                  <div className="message-content">
-                    <div className="message-role">
-                      {message.role === "user"
-                        ? "You"
-                        : "Garuda AI"}
+              {messages.map(
+                (
+                  message,
+                  index
+                ) => (
+                  <div
+                    key={index}
+                    className={`message ${
+                      message.role ===
+                      "user"
+                        ? "user-message"
+                        : "assistant-message"
+                    }`}
+                  >
+
+                    <div className="message-avatar">
+                      {message.role ===
+                      "user"
+                        ? "👤"
+                        : "🦅"}
                     </div>
 
-                    <div className="message-text">
-                      {message.role === "assistant" ? (
-                        <ReactMarkdown
-                          remarkPlugins={[
-                            remarkGfm,
-                            remarkMath,
-                          ]}
-                          rehypePlugins={[
-                            rehypeKatex,
-                          ]}
-                          components={
-                            markdownComponents
-                          }
-                        >
-                          {message.content}
-                        </ReactMarkdown>
-                      ) : (
-                        message.content
-                      )}
+                    <div className="message-content">
+
+                      <div className="message-role">
+                        {message.role ===
+                        "user"
+                          ? "You"
+                          : "Garuda AI"}
+                      </div>
+
+                      <div className="message-text">
+
+                        {message.role ===
+                        "assistant" ? (
+                          <ReactMarkdown
+                            remarkPlugins={[
+                              remarkGfm,
+                              remarkMath,
+                            ]}
+                            rehypePlugins={[
+                              rehypeKatex,
+                            ]}
+                            components={
+                              markdownComponents
+                            }
+                          >
+                            {
+                              message.content
+                            }
+                          </ReactMarkdown>
+                        ) : (
+                          message.content
+                        )}
+
+                      </div>
+
                     </div>
+
                   </div>
-                </div>
-              ))}
+                )
+              )}
 
               {loading &&
-                messages[messages.length - 1]?.role !==
+                messages[
+                  messages.length -
+                    1
+                ]?.role !==
                   "assistant" && (
                   <div className="typing">
                     Garuda AI is thinking...
                   </div>
                 )}
+
             </div>
           )}
+
         </div>
 
+        {/* INPUT */}
+
         <div className="input-area">
+
           <div className="input-wrapper">
+
             <label
               className={`upload-button ${
-                uploading ? "disabled" : ""
+                uploading
+                  ? "disabled"
+                  : ""
               }`}
               title={
                 uploading
@@ -572,23 +841,33 @@ function App() {
                   : "Attach PDF"
               }
             >
+
               📎
 
               <input
                 type="file"
                 accept=".pdf"
-                onChange={uploadPDF}
-                disabled={uploading}
+                onChange={
+                  uploadPDF
+                }
+                disabled={
+                  uploading
+                }
                 hidden
               />
+
             </label>
 
             <textarea
               value={input}
               onChange={(event) =>
-                setInput(event.target.value)
+                setInput(
+                  event.target.value
+                )
               }
-              onKeyDown={handleKeyDown}
+              onKeyDown={
+                handleKeyDown
+              }
               placeholder="Message Garuda AI..."
               rows={1}
               disabled={loading}
@@ -598,19 +877,27 @@ function App() {
               type="button"
               className="send-button"
               onClick={sendMessage}
-              disabled={!input.trim() || loading}
+              disabled={
+                !input.trim() ||
+                loading
+              }
               title="Send message"
             >
               ➤
             </button>
+
           </div>
 
           <div className="input-disclaimer">
-            Garuda AI can make mistakes. Verify
+            Garuda AI can make
+            mistakes. Verify
             important information.
           </div>
+
         </div>
+
       </main>
+
     </div>
   );
 }

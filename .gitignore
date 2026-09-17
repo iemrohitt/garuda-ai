@@ -30,3 +30,5 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+# SQLite database
+backend/garuda.db

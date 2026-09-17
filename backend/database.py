@@ -106,6 +106,40 @@ def create_conversation(title: str):
 
 
 # =========================================================
+# UPDATE CONVERSATION TITLE
+# =========================================================
+
+def update_conversation_title(
+    conversation_id: int,
+    title: str
+):
+    """
+    Update the title of an existing conversation.
+    """
+
+    connection = get_connection()
+
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        UPDATE conversations
+        SET title = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            title,
+            conversation_id
+        )
+    )
+
+    connection.commit()
+
+    connection.close()
+
+
+# =========================================================
 # GET ALL CONVERSATIONS
 # =========================================================
 

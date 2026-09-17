@@ -19,7 +19,8 @@ from database import (
     get_conversations,
     get_messages,
     save_message,
-    delete_conversation
+    delete_conversation,
+    update_conversation_title
 )
 
 
@@ -218,6 +219,24 @@ async def chat(request: ChatRequest):
         conversation_id = create_conversation(
             user_question[:50]
         )
+
+    else:
+
+        # -------------------------------------------------
+        # Update default conversation title
+        # using the user's first message.
+        #
+        # The frontend creates a new conversation with
+        # "New Chat". When the first message arrives,
+        # replace that title with the user's message.
+        # -------------------------------------------------
+
+        if request.messages:
+
+            update_conversation_title(
+                conversation_id,
+                user_question[:50]
+            )
 
 
     # -----------------------------------------------------
