@@ -184,6 +184,39 @@ def remove_conversation(
 
 
 # =========================================================
+# BUILD CONVERSATION HISTORY
+# =========================================================
+
+def build_conversation_history(messages):
+    """
+    Convert database messages into readable conversation
+    history for the Gemini prompt.
+    """
+
+    if not messages:
+        return "No previous conversation."
+
+    history_parts = []
+
+    for message in messages:
+
+        role = message.get("role", "")
+        content = message.get("content", "")
+
+        if role == "user":
+            history_parts.append(
+                f"USER:\n{content}"
+            )
+
+        elif role == "assistant":
+            history_parts.append(
+                f"ASSISTANT:\n{content}"
+            )
+
+    return "\n\n".join(history_parts)
+
+
+# =========================================================
 # CHAT + RAG
 # =========================================================
 
@@ -223,12 +256,7 @@ async def chat(request: ChatRequest):
     else:
 
         # -------------------------------------------------
-        # Update default conversation title
-        # using the user's first message.
-        #
-        # The frontend creates a new conversation with
-        # "New Chat". When the first message arrives,
-        # replace that title with the user's message.
+        # Update conversation title
         # -------------------------------------------------
 
         if request.messages:
@@ -240,7 +268,25 @@ async def chat(request: ChatRequest):
 
 
     # -----------------------------------------------------
-    # 4. Save user message
+    # 4. Get previous conversation history
+    #
+    # IMPORTANT:
+    # We retrieve the history BEFORE saving the current
+    # message so that we can clearly separate previous
+    # messages from the new user question.
+    # -----------------------------------------------------
+
+    previous_messages = get_messages(
+        conversation_id
+    )
+
+    conversation_history = build_conversation_history(
+        previous_messages
+    )
+
+
+    # -----------------------------------------------------
+    # 5. Save current user message
     # -----------------------------------------------------
 
     save_message(
@@ -251,7 +297,7 @@ async def chat(request: ChatRequest):
 
 
     # -----------------------------------------------------
-    # 5. Search ChromaDB
+    # 6. Search ChromaDB
     # -----------------------------------------------------
 
     retrieved_chunks = search_documents(
@@ -261,7 +307,7 @@ async def chat(request: ChatRequest):
 
 
     # -----------------------------------------------------
-    # 6. Prepare document context
+    # 7. Prepare document context
     # -----------------------------------------------------
 
     if retrieved_chunks:
@@ -270,77 +316,83 @@ async def chat(request: ChatRequest):
             retrieved_chunks
         )
 
-        prompt = f"""
+    else:
+
+        context = "No relevant document context was found."
+
+
+    # -----------------------------------------------------
+    # 8. Build prompt with conversation history + RAG
+    # -----------------------------------------------------
+
+    prompt = f"""
 You are Garuda AI, an intelligent AI assistant.
 
-Answer the user's question using the document
-context below when it is relevant.
+Your job is to answer the user's latest question while
+maintaining awareness of the previous conversation.
 
-IMPORTANT RULES:
+IMPORTANT CONVERSATION RULES:
 
-1. If the document context contains information
-   relevant to the question, use it as the primary
-   source.
-2. If the question is a general question and the
-   document context is not relevant, answer using
-   your general knowledge.
-3. Do NOT claim that information is unavailable
-   simply because it is not present in the document.
-4. Only say that something is unavailable in the
-   uploaded document when the user specifically asks
-   about the document or when the question clearly
-   requires information from that document.
-5. For programming questions, provide working code
-   when appropriate.
-6. Format answers using Markdown.
-7. Use proper Markdown headings with #, ##, ###.
-8. Use numbered lists when presenting ordered steps.
-9. Use bullet points when presenting unordered items.
-10. Use LaTeX notation for mathematical equations.
-11. Do not mention ChromaDB, embeddings, or the RAG
+1. Use the conversation history to understand references
+   to earlier messages.
+2. If the user previously provided information such as
+   their name, preferences, project details, or other
+   facts, use that information when relevant.
+3. Do not claim that you do not know something if the
+   information was already provided earlier in this
+   conversation.
+4. Treat the conversation history as the context of the
+   current conversation.
+5. Do not confuse information from the document context
+   with information from the conversation history.
+
+
+IMPORTANT RESPONSE RULES:
+
+1. Provide a helpful and accurate answer.
+2. If the document context contains information relevant
+   to the question, use it as the primary source.
+3. If the question is general and the document context
+   is not relevant, use your general knowledge.
+4. Do not claim that information is unavailable simply
+   because it is not present in the uploaded document.
+5. Only say something is unavailable in the uploaded
+   document when the user specifically asks about the
+   document or when the question clearly requires
+   information from that document.
+6. For programming questions, provide working code when
+   appropriate.
+7. Format answers using Markdown.
+8. Use proper Markdown headings with #, ##, ###.
+9. Use numbered lists for ordered steps.
+10. Use bullet points for unordered items.
+11. Use LaTeX notation for mathematical equations.
+12. Do not mention ChromaDB, embeddings, or the RAG
     pipeline unless the user asks about them.
-12. Give clear and useful explanations.
+13. Give clear and useful explanations.
+
+
+PREVIOUS CONVERSATION:
+----------------------
+{conversation_history}
+----------------------
+
 
 DOCUMENT CONTEXT:
 -----------------
 {context}
 -----------------
 
-USER QUESTION:
+
+LATEST USER QUESTION:
+---------------------
 {user_question}
-"""
-
-    else:
-
-        prompt = f"""
-You are Garuda AI, an intelligent AI assistant.
-
-Answer the user's question using your general
-knowledge.
-
-IMPORTANT RULES:
-
-1. Provide a helpful and accurate answer.
-2. Do not say that the answer is unavailable in
-   an uploaded document.
-3. For programming questions, provide working code
-   when appropriate.
-4. Format answers using Markdown.
-5. Use proper Markdown headings with #, ##, ###.
-6. Use numbered lists when presenting ordered steps.
-7. Use bullet points when presenting unordered items.
-8. Use LaTeX notation for mathematical equations.
-9. Give clear and useful explanations.
-10. Do not mention ChromaDB, embeddings, or RAG unless
-    the user asks about them.
-
-USER QUESTION:
-{user_question}
+---------------------
 """
 
 
     # -----------------------------------------------------
-    # 7. Generate streaming response
+    # 9. Generate streaming response
     # -----------------------------------------------------
 
     def generate():
@@ -357,6 +409,11 @@ USER QUESTION:
                 model=GEMINI_MODEL,
                 contents=prompt,
             )
+
+
+            # -------------------------------------------------
+            # Stream Gemini response
+            # -------------------------------------------------
 
             for chunk in response:
 
@@ -408,7 +465,7 @@ USER QUESTION:
 
 
     # -----------------------------------------------------
-    # 8. Return streaming response
+    # 10. Return streaming response
     # -----------------------------------------------------
 
     return StreamingResponse(
