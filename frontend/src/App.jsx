@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import "katex/dist/katex.min.css";
 import "./App.css";
 
@@ -17,6 +17,17 @@ function App() {
   const [conversationId, setConversationId] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  /*
+   * =====================================================
+   * SELECTED DOCUMENT
+   *
+   * Stores the name of the PDF currently being used
+   * for RAG retrieval.
+   * =====================================================
+   */
+  const [selectedDocument, setSelectedDocument] =
+    useState(null);
 
   useEffect(() => {
     loadConversations();
@@ -33,15 +44,21 @@ function App() {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to load conversations");
+        throw new Error(
+          "Failed to load conversations"
+        );
       }
 
       const data = await response.json();
 
       if (Array.isArray(data)) {
         setConversations(data);
-      } else if (Array.isArray(data.conversations)) {
-        setConversations(data.conversations);
+      } else if (
+        Array.isArray(data.conversations)
+      ) {
+        setConversations(
+          data.conversations
+        );
       } else {
         setConversations([]);
       }
@@ -77,11 +94,22 @@ function App() {
 
       if (Array.isArray(data)) {
         setMessages(data);
-      } else if (Array.isArray(data.messages)) {
+      } else if (
+        Array.isArray(data.messages)
+      ) {
         setMessages(data.messages);
       } else {
         setMessages([]);
       }
+
+      /*
+       * The current database stores conversation messages,
+       * but not the selected PDF name.
+       *
+       * Therefore, clear the selected document when
+       * loading an older conversation.
+       */
+      setSelectedDocument(null);
 
       setInput("");
     } catch (error) {
@@ -100,6 +128,12 @@ function App() {
     setConversationId(null);
     setMessages([]);
     setInput("");
+
+    /*
+     * Clear the currently selected PDF
+     * when starting a completely new chat.
+     */
+    setSelectedDocument(null);
   };
 
   /* =====================================================
@@ -162,18 +196,26 @@ function App() {
         `${API_URL}/api/chat`,
         {
           method: "POST",
+
           headers: {
             "Content-Type": "application/json",
           },
+
+          /*
+           * document_name tells the backend which
+           * uploaded PDF should be searched.
+           */
           body: JSON.stringify({
             messages: updatedMessages,
             conversation_id: conversationId,
+            document_name: selectedDocument,
           }),
         }
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText =
+          await response.text();
 
         console.error(
           "Backend error:",
@@ -186,7 +228,7 @@ function App() {
       }
 
       /* =================================================
-         GET CONVERSATION ID FROM RESPONSE HEADER
+         GET CONVERSATION ID
       ================================================= */
 
       const newConversationId =
@@ -206,11 +248,54 @@ function App() {
         );
       }
 
+      /* =================================================
+         GET RAG SOURCES
+      ================================================= */
+
+      const sourcesHeader =
+        response.headers.get(
+          "X-Sources"
+        ) ||
+        response.headers.get(
+          "x-sources"
+        );
+
+      let retrievedSources = [];
+
+      if (sourcesHeader) {
+        try {
+          retrievedSources =
+            JSON.parse(
+              sourcesHeader
+            );
+        } catch (error) {
+          console.error(
+            "Failed to parse RAG sources:",
+            error
+          );
+        }
+      }
+
       if (!response.body) {
         throw new Error(
           "No response body received from backend"
         );
       }
+
+      /* =================================================
+         CREATE EMPTY ASSISTANT MESSAGE
+      ================================================= */
+
+      const assistantMessage = {
+        role: "assistant",
+        content: "",
+        sources: retrievedSources,
+      };
+
+      setMessages((prev) => [
+        ...prev,
+        assistantMessage,
+      ]);
 
       /* =================================================
          STREAM RESPONSE
@@ -223,14 +308,6 @@ function App() {
         new TextDecoder();
 
       let assistantText = "";
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "",
-        },
-      ]);
 
       while (true) {
         const {
@@ -261,8 +338,11 @@ function App() {
             updated[
               updated.length - 1
             ] = {
-              role: "assistant",
+              ...updated[
+                updated.length - 1
+              ],
               content: assistantText,
+              sources: retrievedSources,
             };
           }
 
@@ -287,6 +367,7 @@ function App() {
           role: "assistant",
           content:
             "Sorry, something went wrong while processing your request.",
+          sources: [],
         },
       ]);
     } finally {
@@ -361,6 +442,16 @@ function App() {
       const data =
         await response.json();
 
+      /*
+       * Remember the uploaded document.
+       *
+       * Future chat requests will send this
+       * filename to the backend.
+       */
+      setSelectedDocument(
+        data.filename || file.name
+      );
+
       alert(
         `PDF uploaded successfully!\n\nFile: ${file.name}\nPages: ${
           data.pages ?? "N/A"
@@ -428,6 +519,22 @@ function App() {
   ===================================================== */
 
   const markdownComponents = {
+    /*
+     * ReactMarkdown normally wraps code blocks
+     * inside a <pre> element.
+     *
+     * We already create our own code-block wrapper,
+     * so remove the default <pre> wrapper.
+     */
+
+    pre({ children }) {
+      return children;
+    },
+
+    /* =================================================
+       CODE BLOCK
+    ================================================= */
+
     code({
       inline,
       className,
@@ -435,7 +542,7 @@ function App() {
       ...props
     }) {
       const match =
-        /language-(\w+)/.exec(
+        /language-([\w+-]+)/.exec(
           className || ""
         );
 
@@ -445,47 +552,60 @@ function App() {
           ""
         );
 
-      if (!inline) {
+      const language =
+        match?.[1] || "text";
+
+      /* -----------------------------------------------
+         INLINE CODE
+      ----------------------------------------------- */
+
+      if (inline) {
         return (
-          <div className="code-block-wrapper">
-            <div className="code-block-header">
-              <span>
-                {match
-                  ? match[1]
-                  : "code"}
-              </span>
-
-              <CopyButton
-                code={code}
-              />
-            </div>
-
-            <SyntaxHighlighter
-              {...props}
-              style={vscDarkPlus}
-              language={
-                match
-                  ? match[1]
-                  : "text"
-              }
-              PreTag="div"
-              className="syntax-highlighter"
-            >
-              {code}
-            </SyntaxHighlighter>
-          </div>
+          <code
+            className={className}
+            {...props}
+          >
+            {children}
+          </code>
         );
       }
 
+      /* -----------------------------------------------
+         FULL CODE BLOCK
+      ----------------------------------------------- */
+
       return (
-        <code
-          className={className}
-          {...props}
-        >
-          {children}
-        </code>
+        <div className="code-block-wrapper">
+
+          <div className="code-block-header">
+
+            <span className="code-language">
+              {language}
+            </span>
+
+            <CopyButton
+              code={code}
+            />
+
+          </div>
+
+          <SyntaxHighlighter
+            style={oneDark}
+            language={language}
+            PreTag="div"
+            className="syntax-highlighter"
+            wrapLongLines={false}
+          >
+            {code}
+          </SyntaxHighlighter>
+
+        </div>
       );
     },
+
+    /* =================================================
+       HEADINGS
+    ================================================= */
 
     h1({ children }) {
       return (
@@ -519,6 +639,10 @@ function App() {
       );
     },
 
+    /* =================================================
+       LISTS
+    ================================================= */
+
     ol({ children }) {
       return (
         <ol className="markdown-ordered-list">
@@ -543,6 +667,10 @@ function App() {
       );
     },
 
+    /* =================================================
+       PARAGRAPHS
+    ================================================= */
+
     p({ children }) {
       return (
         <p className="markdown-paragraph">
@@ -551,6 +679,10 @@ function App() {
       );
     },
 
+    /* =================================================
+       BLOCKQUOTE
+    ================================================= */
+
     blockquote({ children }) {
       return (
         <blockquote className="markdown-blockquote">
@@ -558,6 +690,10 @@ function App() {
         </blockquote>
       );
     },
+
+    /* =================================================
+       TABLE
+    ================================================= */
 
     table({ children }) {
       return (
@@ -568,6 +704,10 @@ function App() {
         </div>
       );
     },
+
+    /* =================================================
+       LINKS
+    ================================================= */
 
     a({
       href,
@@ -584,6 +724,10 @@ function App() {
         </a>
       );
     },
+
+    /* =================================================
+       HORIZONTAL RULE
+    ================================================= */
 
     hr() {
       return (
@@ -606,9 +750,11 @@ function App() {
       <aside className="sidebar">
 
         <div className="sidebar-header">
+
           <h1>
             🦅 Garuda AI
           </h1>
+
         </div>
 
         <button
@@ -713,6 +859,27 @@ function App() {
 
           </div>
 
+          {/* =================================================
+              SELECTED DOCUMENT
+          ================================================= */}
+
+          {selectedDocument && (
+            <div className="selected-document">
+
+              <span className="document-icon">
+                📄
+              </span>
+
+              <span
+                className="document-name"
+                title={selectedDocument}
+              >
+                {selectedDocument}
+              </span>
+
+            </div>
+          )}
+
         </header>
 
         {/* CHAT */}
@@ -760,41 +927,92 @@ function App() {
                   >
 
                     <div className="message-avatar">
+
                       {message.role ===
                       "user"
                         ? "👤"
                         : "🦅"}
+
                     </div>
 
                     <div className="message-content">
 
                       <div className="message-role">
+
                         {message.role ===
                         "user"
                           ? "You"
                           : "Garuda AI"}
+
                       </div>
 
                       <div className="message-text">
 
                         {message.role ===
                         "assistant" ? (
-                          <ReactMarkdown
-                            remarkPlugins={[
-                              remarkGfm,
-                              remarkMath,
-                            ]}
-                            rehypePlugins={[
-                              rehypeKatex,
-                            ]}
-                            components={
-                              markdownComponents
-                            }
-                          >
-                            {
-                              message.content
-                            }
-                          </ReactMarkdown>
+                          <>
+                            <ReactMarkdown
+                              remarkPlugins={[
+                                remarkGfm,
+                                remarkMath,
+                              ]}
+                              rehypePlugins={[
+                                rehypeKatex,
+                              ]}
+                              components={
+                                markdownComponents
+                              }
+                            >
+                              {
+                                message.content
+                              }
+                            </ReactMarkdown>
+
+                            {/* =================================================
+                                SOURCES
+                            ================================================= */}
+
+                            {message.sources &&
+                              message.sources.length >
+                                0 && (
+                                <div className="sources-container">
+
+                                  <div className="sources-title">
+                                    📚 Sources
+                                  </div>
+
+                                  {message.sources.map(
+                                    (
+                                      source,
+                                      sourceIndex
+                                    ) => (
+                                      <div
+                                        className="source-item"
+                                        key={`${source.document}-${source.page}-${source.chunk}-${sourceIndex}`}
+                                      >
+
+                                        <div className="source-document">
+                                          📄{" "}
+                                          {
+                                            source.document
+                                          }
+                                        </div>
+
+                                        <div className="source-page">
+                                          Page{" "}
+                                          {
+                                            source.page
+                                          }
+                                        </div>
+
+                                      </div>
+                                    )
+                                  )}
+
+                                </div>
+                              )}
+
+                          </>
                         ) : (
                           message.content
                         )}
@@ -809,8 +1027,7 @@ function App() {
 
               {loading &&
                 messages[
-                  messages.length -
-                    1
+                  messages.length - 1
                 ]?.role !==
                   "assistant" && (
                   <div className="typing">
@@ -823,7 +1040,9 @@ function App() {
 
         </div>
 
-        {/* INPUT */}
+        {/* =================================================
+            INPUT
+        ================================================= */}
 
         <div className="input-area">
 
@@ -868,7 +1087,11 @@ function App() {
               onKeyDown={
                 handleKeyDown
               }
-              placeholder="Message Garuda AI..."
+              placeholder={
+                selectedDocument
+                  ? `Ask about ${selectedDocument}...`
+                  : "Message Garuda AI..."
+              }
               rows={1}
               disabled={loading}
             />

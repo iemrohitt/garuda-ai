@@ -1,4 +1,3 @@
-from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import chromadb
 
@@ -26,30 +25,7 @@ collection = chroma_client.get_or_create_collection(
 
 
 # =========================================================
-# PDF TEXT EXTRACTION
-# =========================================================
-
-def extract_text_from_pdf(file_path: str) -> str:
-    """
-    Extract text from all pages of a PDF.
-    """
-
-    reader = PdfReader(file_path)
-
-    text = ""
-
-    for page in reader.pages:
-
-        page_text = page.extract_text()
-
-        if page_text:
-            text += page_text + "\n"
-
-    return text.strip()
-
-
-# =========================================================
-# TEXT CHUNKING
+# CHUNK TEXT
 # =========================================================
 
 def chunk_text(
@@ -57,9 +33,9 @@ def chunk_text(
     chunk_size: int = 500,
     overlap: int = 50
 ) -> list[str]:
-    """
-    Split text into overlapping chunks.
-    """
+
+    if not text or not text.strip():
+        return []
 
     words = text.split()
 
@@ -67,18 +43,20 @@ def chunk_text(
 
     start = 0
 
+    step = chunk_size - overlap
+
     while start < len(words):
 
         end = start + chunk_size
 
         chunk = " ".join(
             words[start:end]
-        )
+        ).strip()
 
-        if chunk.strip():
+        if chunk:
             chunks.append(chunk)
 
-        start += chunk_size - overlap
+        start += step
 
     return chunks
 
@@ -88,9 +66,9 @@ def chunk_text(
 # =========================================================
 
 def create_embeddings(chunks: list[str]):
-    """
-    Convert text chunks into numerical vectors.
-    """
+
+    if not chunks:
+        return []
 
     embeddings = embedding_model.encode(
         chunks,
@@ -101,28 +79,47 @@ def create_embeddings(chunks: list[str]):
 
 
 # =========================================================
-# STORE CHUNKS IN CHROMADB
+# STORE CHUNKS
 # =========================================================
 
 def store_chunks(
-    chunks: list[str],
+    chunks,
     embeddings,
-    document_name: str = "document"
+    document_name: str = "document",
+    page_numbers=None
 ):
-    """
-    Store document chunks and embeddings
-    inside ChromaDB.
-    """
 
-    ids = [
-        f"{document_name}_chunk_{i}"
-        for i in range(len(chunks))
-    ]
+    if not chunks:
+        return 0
+
+    if page_numbers is None:
+        page_numbers = [None] * len(chunks)
+
+    ids = []
+
+    metadatas = []
+
+    for i, page_number in enumerate(page_numbers):
+
+        ids.append(
+            f"{document_name}_chunk_{i}"
+        )
+
+        metadata = {
+            "document": document_name,
+            "chunk": i
+        }
+
+        if page_number is not None:
+            metadata["page"] = page_number
+
+        metadatas.append(metadata)
 
     collection.upsert(
         ids=ids,
         documents=chunks,
-        embeddings=embeddings.tolist()
+        embeddings=embeddings.tolist(),
+        metadatas=metadatas
     )
 
     return len(chunks)
@@ -134,51 +131,133 @@ def store_chunks(
 
 def add_document(
     text: str,
-    document_name: str
+    document_name: str,
+    page_number=None
 ):
-    """
-    Process a document and add it to ChromaDB.
-
-    Pipeline:
-
-    Text
-      ↓
-    Chunking
-      ↓
-    Embeddings
-      ↓
-    ChromaDB
-    """
-
-    # -----------------------------------------------------
-    # 1. Create chunks
-    # -----------------------------------------------------
 
     chunks = chunk_text(text)
 
+    if not chunks:
 
-    # -----------------------------------------------------
-    # 2. Create embeddings
-    # -----------------------------------------------------
+        return {
+            "document": document_name,
+            "chunks": 0
+        }
 
     embeddings = create_embeddings(
         chunks
     )
 
-
-    # -----------------------------------------------------
-    # 3. Store in ChromaDB
-    # -----------------------------------------------------
+    page_numbers = [
+        page_number
+        for _ in chunks
+    ]
 
     stored_chunks = store_chunks(
         chunks,
         embeddings,
-        document_name
+        document_name,
+        page_numbers
+    )
+
+    return {
+        "document": document_name,
+        "chunks": stored_chunks
+    }
+
+
+# =========================================================
+# ADD MULTIPLE PAGES
+# =========================================================
+
+def add_pages(
+    pages: list[dict],
+    document_name: str
+):
+    """
+    Add page-aware chunks for a PDF.
+
+    If the same PDF is uploaded again, remove all
+    previous chunks belonging to that document first.
+    This prevents stale chunks from an older version
+    of the PDF from remaining in ChromaDB.
+    """
+
+    # -----------------------------------------------------
+    # Remove existing chunks for this document
+    # -----------------------------------------------------
+
+    collection.delete(
+        where={
+            "document": document_name
+        }
     )
 
 
     # -----------------------------------------------------
-    # 4. Return information
+    # Prepare chunks
+    # -----------------------------------------------------
+
+    all_chunks = []
+
+    all_page_numbers = []
+
+    for page in pages:
+
+        page_number = page["page"]
+
+        page_text = page["text"]
+
+        chunks = chunk_text(
+            page_text
+        )
+
+        for chunk in chunks:
+
+            all_chunks.append(
+                chunk
+            )
+
+            all_page_numbers.append(
+                page_number
+            )
+
+
+    # -----------------------------------------------------
+    # Check whether chunks were created
+    # -----------------------------------------------------
+
+    if not all_chunks:
+
+        return {
+            "document": document_name,
+            "chunks": 0
+        }
+
+
+    # -----------------------------------------------------
+    # Create embeddings
+    # -----------------------------------------------------
+
+    embeddings = create_embeddings(
+        all_chunks
+    )
+
+
+    # -----------------------------------------------------
+    # Store new chunks
+    # -----------------------------------------------------
+
+    stored_chunks = store_chunks(
+        all_chunks,
+        embeddings,
+        document_name,
+        all_page_numbers
+    )
+
+
+    # -----------------------------------------------------
+    # Return result
     # -----------------------------------------------------
 
     return {
@@ -188,48 +267,58 @@ def add_document(
 
 
 # =========================================================
-# SEMANTIC SEARCH
+# SEARCH DOCUMENTS
 # =========================================================
 
 def search_documents(
     query: str,
-    top_k: int = 3
+    top_k: int = 3,
+    document_name: str | None = None,
+    distance_threshold: float = 0.90
 ):
-    """
-    Search ChromaDB for chunks that are
-    semantically similar to the user's question.
-    """
-
-    # -----------------------------------------------------
-    # 1. Convert question into embedding
-    # -----------------------------------------------------
+    if not query or not query.strip():
+        return []
 
     query_embedding = embedding_model.encode(
         query,
         convert_to_numpy=True
     )
 
+    where_filter = None
 
-    # -----------------------------------------------------
-    # 2. Search ChromaDB
-    # -----------------------------------------------------
+    if document_name:
+        where_filter = {"document": document_name}
 
-    results = collection.query(
-        query_embeddings=[
-            query_embedding.tolist()
-        ],
-        n_results=top_k
-    )
+    if where_filter:
+        results = collection.query(
+            query_embeddings=[query_embedding.tolist()],
+            n_results=top_k,
+            where=where_filter
+        )
+    else:
+        results = collection.query(
+            query_embeddings=[query_embedding.tolist()],
+            n_results=top_k
+        )
 
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
-    # -----------------------------------------------------
-    # 3. Extract matching documents
-    # -----------------------------------------------------
+    retrieved_results = []
 
-    documents = results.get(
-        "documents",
-        [[]]
-    )[0]
+    for document, metadata, distance in zip(
+        documents,
+        metadatas,
+        distances
+    ):
+        if distance <= distance_threshold:
+            retrieved_results.append(
+                {
+                    "text": document,
+                    "metadata": metadata or {},
+                    "distance": distance
+                }
+            )
 
-
-    return documents
+    return retrieved_results

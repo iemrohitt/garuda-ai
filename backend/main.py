@@ -1,4 +1,5 @@
 import os
+import json
 
 from dotenv import load_dotenv
 
@@ -12,7 +13,7 @@ from pypdf import PdfReader
 
 from google import genai
 
-from rag.engine import add_document, search_documents
+from rag.engine import add_pages, search_documents
 
 from database import (
     create_conversation,
@@ -51,7 +52,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Conversation-ID"],
+    expose_headers=[
+        "X-Conversation-ID",
+        "X-Sources"
+    ],
 )
 
 
@@ -90,6 +94,10 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     conversation_id: int | None = None
+
+    # Name of the currently selected PDF.
+    # RAG will search only inside this document.
+    document_name: str | None = None
 
 
 class ConversationRequest(BaseModel):
@@ -194,26 +202,194 @@ def build_conversation_history(messages):
     """
 
     if not messages:
+
         return "No previous conversation."
 
     history_parts = []
 
     for message in messages:
 
-        role = message.get("role", "")
-        content = message.get("content", "")
+        role = message.get(
+            "role",
+            ""
+        )
+
+        content = message.get(
+            "content",
+            ""
+        )
 
         if role == "user":
+
             history_parts.append(
                 f"USER:\n{content}"
             )
 
         elif role == "assistant":
+
             history_parts.append(
                 f"ASSISTANT:\n{content}"
             )
 
-    return "\n\n".join(history_parts)
+    return "\n\n".join(
+        history_parts
+    )
+
+
+# =========================================================
+# BUILD DOCUMENT CONTEXT
+# =========================================================
+
+def build_document_context(
+    retrieved_results
+):
+    """
+    Convert structured RAG search results into
+    readable context for the Gemini prompt.
+
+    Each result contains:
+
+        text
+        metadata
+        distance
+
+    Metadata contains:
+
+        document
+        page
+        chunk
+    """
+
+    if not retrieved_results:
+
+        return (
+            "No sufficiently relevant document context "
+            "was found."
+        )
+
+    context_parts = []
+
+    for result in retrieved_results:
+
+        document_text = result.get(
+            "text",
+            ""
+        )
+
+        metadata = result.get(
+            "metadata",
+            {}
+        )
+
+        distance = result.get(
+            "distance"
+        )
+
+        document_name = metadata.get(
+            "document",
+            "Unknown document"
+        )
+
+        chunk_number = metadata.get(
+            "chunk",
+            "Unknown"
+        )
+
+        page_number = metadata.get(
+            "page",
+            "Unknown"
+        )
+
+        if distance is not None:
+
+            retrieval_information = (
+                f"Retrieval distance: {distance:.4f}"
+            )
+
+        else:
+
+            retrieval_information = (
+                "Retrieval distance: Unknown"
+            )
+
+        context_parts.append(
+            f"""
+SOURCE:
+Document: {document_name}
+Page: {page_number}
+Chunk: {chunk_number}
+{retrieval_information}
+
+CONTENT:
+{document_text}
+"""
+        )
+
+    return "\n\n".join(
+        context_parts
+    )
+
+
+# =========================================================
+# BUILD SOURCE INFORMATION
+# =========================================================
+
+def build_sources(
+    retrieved_results
+):
+    """
+    Extract document/page information from
+    retrieved RAG results.
+
+    This metadata is sent to the frontend so
+    Garuda AI can display the sources used
+    for an answer.
+    """
+
+    sources = []
+
+    seen = set()
+
+    for result in retrieved_results:
+
+        metadata = result.get(
+            "metadata",
+            {}
+        )
+
+        document_name = metadata.get(
+            "document",
+            "Unknown document"
+        )
+
+        page_number = metadata.get(
+            "page",
+            "Unknown"
+        )
+
+        chunk_number = metadata.get(
+            "chunk",
+            "Unknown"
+        )
+
+        source_key = (
+            document_name,
+            page_number,
+            chunk_number
+        )
+
+        if source_key in seen:
+            continue
+
+        seen.add(source_key)
+
+        sources.append({
+            "document": document_name,
+            "page": page_number,
+            "chunk": chunk_number
+        })
+
+    return sources
 
 
 # =========================================================
@@ -221,7 +397,9 @@ def build_conversation_history(messages):
 # =========================================================
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest
+):
 
     # -----------------------------------------------------
     # 1. Check messages
@@ -238,14 +416,18 @@ async def chat(request: ChatRequest):
     # 2. Get latest user question
     # -----------------------------------------------------
 
-    user_question = request.messages[-1].content
+    user_question = (
+        request.messages[-1].content
+    )
 
 
     # -----------------------------------------------------
     # 3. Create conversation if one doesn't exist
     # -----------------------------------------------------
 
-    conversation_id = request.conversation_id
+    conversation_id = (
+        request.conversation_id
+    )
 
     if conversation_id is None:
 
@@ -255,33 +437,24 @@ async def chat(request: ChatRequest):
 
     else:
 
-        # -------------------------------------------------
-        # Update conversation title
-        # -------------------------------------------------
-
-        if request.messages:
-
-            update_conversation_title(
-                conversation_id,
-                user_question[:50]
-            )
+        update_conversation_title(
+            conversation_id,
+            user_question[:50]
+        )
 
 
     # -----------------------------------------------------
     # 4. Get previous conversation history
-    #
-    # IMPORTANT:
-    # We retrieve the history BEFORE saving the current
-    # message so that we can clearly separate previous
-    # messages from the new user question.
     # -----------------------------------------------------
 
     previous_messages = get_messages(
         conversation_id
     )
 
-    conversation_history = build_conversation_history(
-        previous_messages
+    conversation_history = (
+        build_conversation_history(
+            previous_messages
+        )
     )
 
 
@@ -300,9 +473,10 @@ async def chat(request: ChatRequest):
     # 6. Search ChromaDB
     # -----------------------------------------------------
 
-    retrieved_chunks = search_documents(
+    retrieved_results = search_documents(
         user_question,
-        top_k=3
+        top_k=3,
+        document_name=request.document_name
     )
 
 
@@ -310,19 +484,66 @@ async def chat(request: ChatRequest):
     # 7. Prepare document context
     # -----------------------------------------------------
 
-    if retrieved_chunks:
-
-        context = "\n\n".join(
-            retrieved_chunks
-        )
-
-    else:
-
-        context = "No relevant document context was found."
+    context = build_document_context(
+        retrieved_results
+    )
 
 
     # -----------------------------------------------------
-    # 8. Build prompt with conversation history + RAG
+    # 8. Build source metadata
+    # -----------------------------------------------------
+
+    sources = build_sources(
+        retrieved_results
+    )
+
+
+    # -----------------------------------------------------
+    # 9. Debug information
+    # -----------------------------------------------------
+
+    print()
+    print("=================================================")
+    print("RAG SEARCH")
+    print("=================================================")
+    print(
+        f"Question: {user_question}"
+    )
+    print(
+        f"Selected document: "
+        f"{request.document_name}"
+    )
+    print(
+        f"Retrieved chunks: "
+        f"{len(retrieved_results)}"
+    )
+
+    if retrieved_results:
+
+        print("Retrieved distances:")
+
+        for result in retrieved_results:
+
+            print(
+                f"  - "
+                f"{result.get('distance', 'Unknown')}"
+            )
+
+    else:
+
+        print(
+            "No sufficiently relevant chunks found."
+        )
+
+    print(
+        f"Sources: {sources}"
+    )
+    print("=================================================")
+    print()
+
+
+    # -----------------------------------------------------
+    # 10. Build grounded prompt
     # -----------------------------------------------------
 
     prompt = f"""
@@ -331,68 +552,151 @@ You are Garuda AI, an intelligent AI assistant.
 Your job is to answer the user's latest question while
 maintaining awareness of the previous conversation.
 
-IMPORTANT CONVERSATION RULES:
+=================================================
+CONVERSATION RULES
+=================================================
 
 1. Use the conversation history to understand references
    to earlier messages.
+
 2. If the user previously provided information such as
    their name, preferences, project details, or other
    facts, use that information when relevant.
+
 3. Do not claim that you do not know something if the
-   information was already provided earlier in this
+   information was already provided earlier in the
    conversation.
+
 4. Treat the conversation history as the context of the
    current conversation.
+
 5. Do not confuse information from the document context
    with information from the conversation history.
 
 
-IMPORTANT RESPONSE RULES:
+=================================================
+DOCUMENT / RAG RULES
+=================================================
+
+1. DOCUMENT CONTEXT contains information retrieved from
+   the currently selected uploaded document.
+
+2. Retrieved document context has already passed a
+   relevance filter.
+
+3. When retrieved document context is relevant to the
+   user's question, use it as the primary source for
+   answering that question.
+
+4. Do not claim that information came from the document
+   unless that information is supported by the retrieved
+   document context.
+
+5. Pay attention to the SOURCE information associated
+   with each retrieved chunk.
+
+6. SOURCE contains:
+
+   - Document name
+   - Page number
+   - Chunk number
+
+7. Do not invent facts and attribute them to the uploaded
+   document.
+
+8. If no sufficiently relevant document context was
+   retrieved, do not pretend that the uploaded document
+   contains the answer.
+
+9. If the user's question is clearly about the selected
+   document but the retrieved context does not contain
+   enough information to answer it, clearly state that
+   the available document context does not provide enough
+   information.
+
+10. If the question is a general question unrelated to
+    the selected document and no relevant document
+    context was retrieved, you may answer using general
+    knowledge.
+
+11. Do not use information from another uploaded document
+    when a specific document has been selected.
+
+12. Do not mention ChromaDB, embeddings, vector databases,
+    retrieval distances, or the RAG pipeline unless the
+    user asks about them.
+
+
+=================================================
+RESPONSE RULES
+=================================================
 
 1. Provide a helpful and accurate answer.
-2. If the document context contains information relevant
-   to the question, use it as the primary source.
-3. If the question is general and the document context
-   is not relevant, use your general knowledge.
-4. Do not claim that information is unavailable simply
-   because it is not present in the uploaded document.
-5. Only say something is unavailable in the uploaded
-   document when the user specifically asks about the
-   document or when the question clearly requires
-   information from that document.
+
+2. Prefer retrieved document context when it is relevant.
+
+3. Maintain continuity with the conversation history.
+
+4. Do not claim that information is unavailable merely
+   because it is not present in the uploaded document
+   when the question is a general question.
+
+5. For document-specific questions, rely on the retrieved
+   document context and clearly distinguish when the
+   available context is insufficient.
+
 6. For programming questions, provide working code when
    appropriate.
+
 7. Format answers using Markdown.
+
 8. Use proper Markdown headings with #, ##, ###.
+
 9. Use numbered lists for ordered steps.
-10. Use bullet points for unordered items.
+
+10. Use bullet points for unordered lists.
+
 11. Use LaTeX notation for mathematical equations.
-12. Do not mention ChromaDB, embeddings, or the RAG
-    pipeline unless the user asks about them.
-13. Give clear and useful explanations.
+
+12. Give clear and useful explanations.
 
 
-PREVIOUS CONVERSATION:
-----------------------
+=================================================
+CURRENT SELECTED DOCUMENT
+=================================================
+
+{request.document_name or "No specific document selected"}
+
+
+=================================================
+PREVIOUS CONVERSATION
+=================================================
+
 {conversation_history}
-----------------------
 
 
-DOCUMENT CONTEXT:
------------------
+=================================================
+RETRIEVED DOCUMENT CONTEXT
+=================================================
+
 {context}
------------------
 
 
-LATEST USER QUESTION:
----------------------
+=================================================
+LATEST USER QUESTION
+=================================================
+
 {user_question}
----------------------
+
+
+=================================================
+FINAL ANSWER
+=================================================
 """
 
 
     # -----------------------------------------------------
-    # 9. Generate streaming response
+    # 11. Generate streaming response
     # -----------------------------------------------------
 
     def generate():
@@ -402,12 +706,20 @@ LATEST USER QUESTION:
         try:
 
             print(
-                f"Using Gemini model: {GEMINI_MODEL}"
+                f"Using Gemini model: "
+                f"{GEMINI_MODEL}"
             )
 
-            response = client.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=prompt,
+            print(
+                f"Document filter: "
+                f"{request.document_name}"
+            )
+
+            response = (
+                client.models.generate_content_stream(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                )
             )
 
 
@@ -456,8 +768,8 @@ LATEST USER QUESTION:
             )
 
             error_message = (
-                "\n\n⚠️ Garuda AI encountered an error while "
-                "connecting to the AI model.\n\n"
+                "\n\n⚠️ Garuda AI encountered an error "
+                "while connecting to the AI model.\n\n"
                 f"Error: {str(e)}"
             )
 
@@ -465,7 +777,18 @@ LATEST USER QUESTION:
 
 
     # -----------------------------------------------------
-    # 10. Return streaming response
+    # 12. Prepare source header
+    # -----------------------------------------------------
+
+    sources_header = json.dumps(
+        sources,
+        separators=(",", ":"),
+        ensure_ascii=True
+    )
+
+
+    # -----------------------------------------------------
+    # 13. Return streaming response
     # -----------------------------------------------------
 
     return StreamingResponse(
@@ -477,9 +800,10 @@ LATEST USER QUESTION:
         headers={
             "X-Conversation-ID": str(
                 conversation_id
-            )
-        }
+            ),
 
+            "X-Sources": sources_header
+        }
     )
 
 
@@ -524,7 +848,6 @@ async def upload_pdf(
 
     file_content = await file.read()
 
-
     with open(
         file_path,
         "wb"
@@ -541,30 +864,43 @@ async def upload_pdf(
         file_path
     )
 
-    text = ""
-
 
     # -----------------------------------------------------
-    # 5. Extract text
+    # 5. Extract text page-by-page
     # -----------------------------------------------------
 
-    for page in reader.pages:
+    pages = []
+
+    total_characters = 0
+
+    for page_number, page in enumerate(
+        reader.pages,
+        start=1
+    ):
 
         page_text = page.extract_text()
 
         if page_text:
 
-            text += page_text + "\n"
+            page_text = page_text.strip()
 
+            if page_text:
 
-    text = text.strip()
+                pages.append({
+                    "page": page_number,
+                    "text": page_text
+                })
+
+                total_characters += len(
+                    page_text
+                )
 
 
     # -----------------------------------------------------
     # 6. Check extracted text
     # -----------------------------------------------------
 
-    if not text:
+    if not pages:
 
         return {
             "error":
@@ -573,12 +909,11 @@ async def upload_pdf(
 
 
     # -----------------------------------------------------
-    # 7. Create chunks + embeddings
-    #    and store in ChromaDB
+    # 7. Create page-aware chunks + embeddings
     # -----------------------------------------------------
 
-    result = add_document(
-        text,
+    result = add_pages(
+        pages,
         file.filename
     )
 
@@ -595,8 +930,11 @@ async def upload_pdf(
         "pages":
             len(reader.pages),
 
+        "pages_with_text":
+            len(pages),
+
         "characters":
-            len(text),
+            total_characters,
 
         "chunks":
             result["chunks"],
