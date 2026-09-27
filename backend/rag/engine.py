@@ -1,23 +1,20 @@
 from sentence_transformers import SentenceTransformer
 import chromadb
+import re
 
 
 # =========================================================
 # EMBEDDING MODEL
 # =========================================================
 
-embedding_model = SentenceTransformer(
-    "all-MiniLM-L6-v2"
-)
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 # =========================================================
 # CHROMADB
 # =========================================================
 
-chroma_client = chromadb.PersistentClient(
-    path="chroma_db"
-)
+chroma_client = chromadb.PersistentClient(path="chroma_db")
 
 collection = chroma_client.get_or_create_collection(
     name="garuda_documents"
@@ -25,7 +22,31 @@ collection = chroma_client.get_or_create_collection(
 
 
 # =========================================================
-# CHUNK TEXT
+# TEXT CLEANING
+# =========================================================
+
+def clean_text(text: str) -> str:
+    """
+    Clean extracted PDF text while preserving paragraph structure.
+    """
+
+    if not text:
+        return ""
+
+    # Normalize different line endings
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove excessive spaces/tabs
+    text = re.sub(r"[ \t]+", " ", text)
+
+    # Remove excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
+# =========================================================
+# PARAGRAPH-AWARE CHUNKING
 # =========================================================
 
 def chunk_text(
@@ -33,32 +54,121 @@ def chunk_text(
     chunk_size: int = 500,
     overlap: int = 50
 ) -> list[str]:
+    """
+    Split text into paragraph-aware chunks.
 
-    if not text or not text.strip():
+    Instead of blindly splitting every 500 words, this function
+    tries to keep paragraphs together while still maintaining
+    a maximum chunk size.
+
+    chunk_size:
+        Maximum approximate number of words per chunk.
+
+    overlap:
+        Approximate number of words carried from the previous
+        chunk into the next chunk.
+    """
+
+    text = clean_text(text)
+
+    if not text:
         return []
 
-    words = text.split()
+    # Split using blank lines as paragraph boundaries
+    paragraphs = re.split(r"\n\s*\n", text)
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in paragraphs
+        if paragraph.strip()
+    ]
 
     chunks = []
+    current_words = []
 
-    start = 0
+    for paragraph in paragraphs:
 
-    step = chunk_size - overlap
+        paragraph_words = paragraph.split()
 
-    while start < len(words):
+        # -----------------------------------------------------
+        # If the paragraph itself is larger than chunk_size,
+        # split that paragraph into smaller pieces.
+        # -----------------------------------------------------
 
-        end = start + chunk_size
+        if len(paragraph_words) > chunk_size:
 
-        chunk = " ".join(
-            words[start:end]
-        ).strip()
+            # First store whatever we already accumulated
+            if current_words:
+                chunks.append(" ".join(current_words))
+                current_words = []
 
-        if chunk:
-            chunks.append(chunk)
+            start = 0
 
-        start += step
+            while start < len(paragraph_words):
 
-    return chunks
+                end = start + chunk_size
+
+                piece = paragraph_words[start:end]
+
+                if piece:
+                    chunks.append(" ".join(piece))
+
+                # Maintain overlap for very large paragraphs
+                start += max(1, chunk_size - overlap)
+
+            continue
+
+        # -----------------------------------------------------
+        # Add paragraph to current chunk if it fits
+        # -----------------------------------------------------
+
+        if len(current_words) + len(paragraph_words) <= chunk_size:
+
+            current_words.extend(paragraph_words)
+
+        else:
+
+            # Save current chunk
+            if current_words:
+                chunks.append(" ".join(current_words))
+
+            # Start new chunk with current paragraph
+            current_words = paragraph_words.copy()
+
+    # ---------------------------------------------------------
+    # Save final chunk
+    # ---------------------------------------------------------
+
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    # ---------------------------------------------------------
+    # Add controlled overlap between normal chunks
+    # ---------------------------------------------------------
+
+    final_chunks = []
+
+    for i, chunk in enumerate(chunks):
+
+        if i == 0:
+            final_chunks.append(chunk)
+            continue
+
+        previous_words = final_chunks[-1].split()
+
+        overlap_words = previous_words[-overlap:] if overlap > 0 else []
+
+        current_words = chunk.split()
+
+        combined = overlap_words + current_words
+
+        # Avoid creating an unnecessarily large chunk
+        if len(combined) <= chunk_size + overlap:
+            final_chunks.append(" ".join(combined))
+        else:
+            final_chunks.append(chunk)
+
+    return final_chunks
 
 
 # =========================================================
@@ -66,6 +176,9 @@ def chunk_text(
 # =========================================================
 
 def create_embeddings(chunks: list[str]):
+    """
+    Create embeddings for a list of text chunks.
+    """
 
     if not chunks:
         return []
@@ -88,6 +201,9 @@ def store_chunks(
     document_name: str = "document",
     page_numbers=None
 ):
+    """
+    Store chunks and metadata inside ChromaDB.
+    """
 
     if not chunks:
         return 0
@@ -96,7 +212,6 @@ def store_chunks(
         page_numbers = [None] * len(chunks)
 
     ids = []
-
     metadatas = []
 
     for i, page_number in enumerate(page_numbers):
@@ -126,7 +241,7 @@ def store_chunks(
 
 
 # =========================================================
-# ADD DOCUMENT
+# ADD SINGLE DOCUMENT
 # =========================================================
 
 def add_document(
@@ -134,23 +249,22 @@ def add_document(
     document_name: str,
     page_number=None
 ):
+    """
+    Add a single document to ChromaDB.
+    """
 
     chunks = chunk_text(text)
 
     if not chunks:
-
         return {
             "document": document_name,
             "chunks": 0
         }
 
-    embeddings = create_embeddings(
-        chunks
-    )
+    embeddings = create_embeddings(chunks)
 
     page_numbers = [
-        page_number
-        for _ in chunks
+        page_number for _ in chunks
     ]
 
     stored_chunks = store_chunks(
@@ -167,7 +281,7 @@ def add_document(
 
 
 # =========================================================
-# ADD MULTIPLE PAGES
+# ADD PDF PAGES
 # =========================================================
 
 def add_pages(
@@ -175,17 +289,15 @@ def add_pages(
     document_name: str
 ):
     """
-    Add page-aware chunks for a PDF.
+    Add page-by-page PDF content.
 
-    If the same PDF is uploaded again, remove all
-    previous chunks belonging to that document first.
-    This prevents stale chunks from an older version
-    of the PDF from remaining in ChromaDB.
+    Existing chunks for the same document are deleted first
+    so that re-uploading a PDF does not leave stale chunks.
     """
 
-    # -----------------------------------------------------
-    # Remove existing chunks for this document
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
+    # Delete old chunks for this document
+    # ---------------------------------------------------------
 
     collection.delete(
         where={
@@ -193,39 +305,31 @@ def add_pages(
         }
     )
 
-
-    # -----------------------------------------------------
-    # Prepare chunks
-    # -----------------------------------------------------
-
     all_chunks = []
-
     all_page_numbers = []
+
+    # ---------------------------------------------------------
+    # Process each page separately
+    # ---------------------------------------------------------
 
     for page in pages:
 
         page_number = page["page"]
-
         page_text = page["text"]
 
-        chunks = chunk_text(
-            page_text
-        )
+        chunks = chunk_text(page_text)
 
         for chunk in chunks:
 
-            all_chunks.append(
-                chunk
-            )
+            all_chunks.append(chunk)
 
             all_page_numbers.append(
                 page_number
             )
 
-
-    # -----------------------------------------------------
-    # Check whether chunks were created
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
+    # No usable content
+    # ---------------------------------------------------------
 
     if not all_chunks:
 
@@ -234,19 +338,17 @@ def add_pages(
             "chunks": 0
         }
 
-
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
     # Create embeddings
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
 
     embeddings = create_embeddings(
         all_chunks
     )
 
-
-    # -----------------------------------------------------
-    # Store new chunks
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
+    # Store everything
+    # ---------------------------------------------------------
 
     stored_chunks = store_chunks(
         all_chunks,
@@ -254,11 +356,6 @@ def add_pages(
         document_name,
         all_page_numbers
     )
-
-
-    # -----------------------------------------------------
-    # Return result
-    # -----------------------------------------------------
 
     return {
         "document": document_name,
@@ -276,43 +373,91 @@ def search_documents(
     document_name: str | None = None,
     distance_threshold: float = 0.90
 ):
+    """
+    Search ChromaDB for relevant document chunks.
+
+    Lower ChromaDB distance means greater similarity.
+    """
+
     if not query or not query.strip():
         return []
+
+    # ---------------------------------------------------------
+    # Create query embedding
+    # ---------------------------------------------------------
 
     query_embedding = embedding_model.encode(
         query,
         convert_to_numpy=True
     )
 
+    # ---------------------------------------------------------
+    # Optional document filter
+    # ---------------------------------------------------------
+
     where_filter = None
 
     if document_name:
-        where_filter = {"document": document_name}
+        where_filter = {
+            "document": document_name
+        }
+
+    # ---------------------------------------------------------
+    # Query ChromaDB
+    # ---------------------------------------------------------
 
     if where_filter:
+
         results = collection.query(
-            query_embeddings=[query_embedding.tolist()],
+            query_embeddings=[
+                query_embedding.tolist()
+            ],
             n_results=top_k,
             where=where_filter
         )
+
     else:
+
         results = collection.query(
-            query_embeddings=[query_embedding.tolist()],
+            query_embeddings=[
+                query_embedding.tolist()
+            ],
             n_results=top_k
         )
 
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
+    # ---------------------------------------------------------
+    # Extract results
+    # ---------------------------------------------------------
+
+    documents = results.get(
+        "documents",
+        [[]]
+    )[0]
+
+    metadatas = results.get(
+        "metadatas",
+        [[]]
+    )[0]
+
+    distances = results.get(
+        "distances",
+        [[]]
+    )[0]
 
     retrieved_results = []
+
+    # ---------------------------------------------------------
+    # Apply relevance threshold
+    # ---------------------------------------------------------
 
     for document, metadata, distance in zip(
         documents,
         metadatas,
         distances
     ):
+
         if distance <= distance_threshold:
+
             retrieved_results.append(
                 {
                     "text": document,
